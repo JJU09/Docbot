@@ -185,10 +185,12 @@ function UpdateTableTool({
 // ✨ 누락되었던 인터페이스 선언 추가
 interface ChatPanelProps {
   editorContext: string;
+  isNewDocument?: boolean;
 }
 
 export default function ChatPanel({ 
-  editorContext
+  editorContext,
+  isNewDocument = false
 }: ChatPanelProps) {
   const { selectedHtml, selectedText, editorRef } = useEditor()
 
@@ -289,7 +291,7 @@ export default function ChatPanel({
 
     const contextLength = editorContext?.trim().length ?? 0
     
-    if (contextLength > 10) {
+    if (!isNewDocument) {
       hasInitializedAnalyizeRef.current = true
       sendMessage({ text: INITIAL_PROMPT }, {
         body: {
@@ -299,25 +301,19 @@ export default function ChatPanel({
         }
       })
     } else {
-      const timer = setTimeout(() => {
-        if (!hasInitializedAnalyizeRef.current) {
-          hasInitializedAnalyizeRef.current = true
-
-          setMessages([
-            {
-              id: 'initial-onboarding',
-              role: 'assistant',
-              parts: [{ 
-                type: 'text', 
-                text: '새로운 문서를 시작하시네요! 👋\n\n어떤 종류의 문서를 작성하실 계획인가요?\n(예: IT 서비스 사업계획서, 주간 운영 보고서, 제안서, 기획안 등)' 
-              }],
-            }
-          ])
-        }}, 3000); 
-
-      return () => clearTimeout(timer)
+      hasInitializedAnalyizeRef.current = true
+      setMessages([
+        {
+          id: 'initial-onboarding',
+          role: 'assistant',
+          parts: [{ 
+            type: 'text', 
+            text: '새로운 문서를 시작하시네요! 👋\n\n어떤 종류의 문서를 작성하실 계획인가요?\n(예: IT 서비스 사업계획서, 주간 운영 보고서, 제안서, 기획안 등)' 
+          }],
+        }
+      ])
     }
-  }, [messages.length, editorContext, sendMessage, setMessages, truncatedContext, INITIAL_PROMPT, selectedHtml, selectedText])
+  }, [messages.length, isNewDocument, sendMessage, setMessages, truncatedContext, INITIAL_PROMPT, selectedHtml, selectedText])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   useEffect(() => {

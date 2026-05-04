@@ -30,6 +30,7 @@ function EditorContentInner() {
   const [loadingStep, setLoadingStep] = useState<LoadingStep>('idle')
   const [isSaving, setIsSaving] = useState(false)
   const lastSavedContentRef = useRef<string>('')
+  const [isNewDocument, setIsNewDocument] = useState(false)
 
   // 핵심 개선: 이벤트 기반 초기화 로직
   const handleContentChange = useCallback((text: string) => {
@@ -63,6 +64,12 @@ function EditorContentInner() {
 
         if (data) {
           setTitle(data.title);
+
+          if (data.file_path || data.content_html) {
+            setIsNewDocument(false);
+          } else {
+            setIsNewDocument(true);
+          }
 
           if (data.file_path) {
             const { data: fileData, error: downloadError } = await supabase.storage
@@ -101,8 +108,20 @@ function EditorContentInner() {
                 setIsInitializing(false);
               }
             }
+          } else if (data.content_html) {
+            setLoadingStep('rendering');
+            editorRef.current?.loadDocument(data.content_html);
+            safetyTimer = setTimeout(() => {
+              if (isInitializing) {
+                const text = editorRef.current?.getText() || '';
+                setContent(text);
+                setIsInitializing(false);
+                setLoadingStep('complete');
+              }
+            }, 10000);
           } else {
             setIsInitializing(false); // 빈 문서인 경우
+            setLoadingStep('complete');
           }
         }
       } catch (error) {
@@ -226,6 +245,7 @@ function EditorContentInner() {
       {!isInitializing && (
         <ChatPanel
           editorContext={content}
+          isNewDocument={isNewDocument}
         />
       )}
     </main>
