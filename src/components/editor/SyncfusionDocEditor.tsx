@@ -172,16 +172,16 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
 
       const selectedSfdt = selection.sfdt;
       props.onSelectionChange(selectedSfdt, selectedText);
-    }, [props.onSelectionChange]);
+    }, [props]);
 
     const handleContentChange = useCallback(() => {
       const editor = containerRef.current?.documentEditor;
       if (!editor || !props.onContentChange) return;
 
-      // @ts-ignore
+      // @ts-expect-error syncfusion types might be incomplete
       const fullText = editor.serialize().length > 0 ? editor.text : '';
       props.onContentChange(fullText || '');
-    }, [props.onContentChange]);
+    }, [props]);
 
     useImperativeHandle(ref, () => ({
       getText: () => {
@@ -189,7 +189,7 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
         if (!editor) return '';
         
         // 커서 이동 없이 에디터의 텍스트만 추출 (성능 최적화 및 깜빡임 방지)
-        // @ts-ignore
+        // @ts-expect-error syncfusion types might be incomplete
         return editor.text || '';
       },
 
@@ -246,6 +246,7 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
           editor.selection.selectBookmark(tempBookmark);
           editor.editor.deleteBookmark(tempBookmark);
 
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let bestMatchResult: any = null;
           let bestScore = -1;
           let foundSomething = false;
@@ -268,11 +269,13 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
 
             for (const query of searchQueries) {
               if (!query) continue;
-              // @ts-ignore
+              // @ts-expect-error syncfusion types might be incomplete
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const results: any[] = editor.searchModule.findAll(query, 'None');
               
               if (results && results.length > 0) {
                 let searchStartIndex = 0;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 results.forEach((res: any) => {
                   let score = 1; 
                   const matchIndex = fullText.indexOf(query, searchStartIndex);
@@ -305,7 +308,6 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
               if (targetType === 'table') {
                 try {
                   // 검색된 단어의 위치(표 내부)에서 '표 전체 선택' 명령 실행
-                  // @ts-ignore
                   editor.selection.selectTable();
                 } catch (e) {
                   console.warn("표 선택에 실패했습니다.", e);
@@ -445,7 +447,8 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
         try {
           let foundTable = false;
           if (editor.searchModule) {
-            // @ts-ignore
+            // @ts-expect-error syncfusion types might be incomplete
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const results: any[] = editor.searchModule.findAll(targetKeyword, 'None');
             if (results && results.length > 0) {
               editor.searchModule.navigate(results[0]);
@@ -459,7 +462,7 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
           }
 
           // 해당 표의 첫 번째 셀로 이동
-          // @ts-ignore
+          // @ts-expect-error syncfusion types might be incomplete
           editor.selection.navigateTable('FirstCell');
 
           const originalUser = editor.currentUser;
@@ -468,18 +471,17 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
 
           for (let r = 0; r < tableData.length; r++) {
             for (let c = 0; c < tableData[r].length; c++) {
-              // @ts-ignore
               editor.selection.selectCell();
               editor.editor.delete();
               editor.editor.insertText(tableData[r][c]);
               
               if (c < tableData[r].length - 1) {
-                // @ts-ignore
+                // @ts-expect-error syncfusion types might be incomplete
                 editor.selection.navigateTable('NextCell');
               }
             }
             if (r < tableData.length - 1) {
-              // @ts-ignore
+              // @ts-expect-error syncfusion types might be incomplete
               editor.selection.navigateTable('NextRow');
             }
           }

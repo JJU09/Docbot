@@ -10,7 +10,6 @@ import {
   useSensor,
   useSensors,
   DragOverlay,
-  defaultDropAnimationSideEffects,
   DragStartEvent,
   DragMoveEvent,
   DragEndEvent,
