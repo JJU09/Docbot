@@ -1,3 +1,4 @@
+// .env.local에 LITELLM_MODEL 변수를 추가하여 사용할 모델을 설정하세요. (기본값: gemini/gemini-3.0-flash-preview)
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { streamText, tool, convertToModelMessages } from 'ai'
 import { z } from 'zod'
@@ -12,6 +13,24 @@ const litellm = createOpenAICompatible({
 
 export async function POST(req: Request) {
   const { messages, editorContext, selectedText } = await req.json()
+
+  // 컨텍스트 전송 전략 최적화
+  const lastUserMessage = messages[messages.length - 1]?.content || '';
+  const isRequestingFullContext = /전체|다시 분석|문서 전체/.test(lastUserMessage);
+  
+  let effectiveContext = editorContext;
+  let contextInstruction = '';
+
+  if (selectedText) {
+    // 1. 선택 영역이 있는 경우: 선택된 텍스트만 강조, 전체 컨텍스트는 비용 절감을 위해 생략하거나 최소화 안내
+    effectiveContext = '(선택 영역 분석을 위해 생략됨)';
+    contextInstruction = '사용자가 텍스트를 선택했습니다. 전체 문서보다는 "선택된 텍스트"의 수정에 집중하세요.';
+  } else if (messages.length > 1 && !isRequestingFullContext) {
+    // 2. 대화 중이고(첫 요청 아님) 전체 요청 키워드가 없는 경우: 컨텍스트 제외
+    effectiveContext = '(비용 절감을 위해 생략됨)';
+    contextInstruction = `문서 전체 내용은 대화 초반에 이미 분석되었습니다.
+사용자가 명시적으로 문서 전체 재분석을 요청할 때만 'NEED_FULL_CONTEXT'라고 응답하세요.`;
+  }
 
   const isDocumentEmpty = !editorContext || editorContext.trim().length < 50;
 
@@ -30,9 +49,10 @@ export async function POST(req: Request) {
 당신은 단순히 문서를 "정리"하는 것이 아니라, 사용자의 최소한의 입력만으로도 완벽한 비즈니스 문서를 "창작"합니다.
 
 [현재 문서 컨텍스트]
-- 전체 문서 내용: ${editorContext ? editorContext : '아직 내용이 없습니다.'}
+- 전체 문서 내용: ${effectiveContext ? effectiveContext : '아직 내용이 없습니다.'}
 - 선택된 텍스트: ${selectedText ? selectedText : '없음'}
-- 만약 사용자가 명시적으로 선택한 텍스트(선택된 텍스트)가 없다면, 전체 문서 내용을 바탕으로 수정해야 할 위치를 스스로 찾아야 합니다.
+${contextInstruction ? `\n[컨텍스트 운용 지침]\n${contextInstruction}\n` : ''}
+- 만약 사용자가 명시적으로 선택한 텍스트(선택된 텍스트)가 없다면, 현재까지 파악된 문서 내용을 바탕으로 수정해야 할 위치를 스스로 찾아야 합니다.
 
 ${workflowPrompt}
 
@@ -47,7 +67,7 @@ ${workflowPrompt}
   })
 
   const result = streamText({
-    model: litellm('gemini/gemini-3-flash-preview'),
+    model: litellm(process.env.LITELLM_MODEL ?? 'gemini/gemini-3.0-flash-preview'),
     system: systemPrompt,
     messages: modelMessages,
 
@@ -102,7 +122,7 @@ ${workflowPrompt}
     },
     // AI가 클라이언트의 도구 결과를 받고 스스로 다음 단계를 이어가도록 설정 (v5.0 권장)
     // @ts-expect-error maxSteps is supported in newer ai sdk
-    maxSteps: 5,
+    maxSteps: 3,
   })
 
   return result.toUIMessageStreamResponse({

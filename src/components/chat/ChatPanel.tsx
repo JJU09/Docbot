@@ -3,7 +3,7 @@
 import { useChat } from '@ai-sdk/react'
 import { type UIMessage } from 'ai'
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { Send, User, Bot, Check, X } from 'lucide-react'
+import { Send, User, Bot, Check, X, AlertCircle } from 'lucide-react'
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import TocBuilder from '../template/TocBuilder'
@@ -184,15 +184,18 @@ function UpdateTableTool({
 // ==================== Main ChatPanel ====================
 // ✨ 누락되었던 인터페이스 선언 추가
 interface ChatPanelProps {
+  documentId: string;
   editorContext: string;
   isNewDocument?: boolean;
 }
 
 export default function ChatPanel({ 
+  documentId,
   editorContext,
   isNewDocument = false
 }: ChatPanelProps) {
   const { selectedHtml, selectedText, editorRef } = useEditor()
+  const [showHistoryError, setShowHistoryError] = useState(false)
 
   const INITIAL_PROMPT = '업로드된 문서의 구조와 핵심 내용을 분석해서 요약해줘. "[문서 구조 분석 브리핑]" 이라는 제목으로 시작하고, 앞으로 내가 질문하거나 수정을 요청할 때 이 전체 구조를 기억하고 문맥에 맞게 답변해줘.'
   
@@ -203,9 +206,19 @@ export default function ChatPanel({
   const [input, setInput] = useState('')
 
   const truncatedContext = useMemo(() => {
-    return editorContext && editorContext.length > 30000 
-      ? editorContext.slice(0, 30000) + '\n...(중략)...' 
-      : editorContext
+    if (!editorContext) return '';
+    const MAX_LENGTH = 15000;
+    
+    if (editorContext.length <= MAX_LENGTH) return editorContext;
+
+    // 15,000자에서 자르되, 가장 가까운 이전 문단 끝(\n)을 찾음
+    const slice = editorContext.slice(0, MAX_LENGTH);
+    const lastNewline = slice.lastIndexOf('\n');
+    
+    // 적절한 줄바꿈 위치를 찾으면 거기서 자르고, 아니면 그냥 slice
+    const finalTrim = lastNewline > MAX_LENGTH * 0.8 ? slice.slice(0, lastNewline) : slice;
+    
+    return finalTrim + '\n...(이하 생략)';
   }, [editorContext])
 
   useEffect(() => {
@@ -286,11 +299,46 @@ export default function ChatPanel({
     setInput('')
   }
 
+  // 채팅 히스토리 불러오기
+  useEffect(() => {
+    const fetchHistory = async () => {
+      if (!documentId || isNewDocument) return;
+      
+      try {
+        const { createClient } = await import('@/lib/supabase/client');
+        const supabase = createClient();
+        
+        const { data, error } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .eq('document_id', documentId)
+          .order('created_at', { ascending: true });
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          const uiMessages: UIMessage[] = data.map(m => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            parts: [{ type: 'text', text: m.content }]
+          }));
+          setMessages(uiMessages);
+          hasInitializedAnalyizeRef.current = true;
+        }
+      } catch (err) {
+        console.error('Failed to fetch chat history:', err);
+        setShowHistoryError(true);
+        setTimeout(() => setShowHistoryError(false), 3000);
+      }
+    };
+
+    fetchHistory();
+  }, [documentId, isNewDocument, setMessages]);
+
   useEffect(() => {
     if (messages.length > 0 || hasInitializedAnalyizeRef.current) return
 
-    const contextLength = editorContext?.trim().length ?? 0
-    
     if (!isNewDocument) {
       hasInitializedAnalyizeRef.current = true
       sendMessage({ text: INITIAL_PROMPT }, {
@@ -313,7 +361,7 @@ export default function ChatPanel({
         }
       ])
     }
-  }, [messages.length, isNewDocument, sendMessage, setMessages, truncatedContext, INITIAL_PROMPT, selectedHtml, selectedText])
+  }, [messages.length, isNewDocument, sendMessage, setMessages, truncatedContext, INITIAL_PROMPT, selectedHtml, selectedText, editorContext])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -336,11 +384,19 @@ export default function ChatPanel({
         }}
       />
       
-      <div className="p-4 border-b bg-white font-bold text-gray-700">
+      <div className="p-4 border-b bg-white font-bold text-gray-700 relative">
         AI 문서 도우미
         {selectedHtml && (
           <div className="text-xs font-normal text-blue-600 mt-1 truncate">
             선택 영역 수정 중...
+          </div>
+        )}
+        
+        {/* 히스토리 로드 실패 배너 */}
+        {showHistoryError && (
+          <div className="absolute top-full left-0 right-0 bg-yellow-50 border-b border-yellow-100 p-2 flex items-center gap-2 text-[11px] text-yellow-800 z-10 animate-in slide-in-from-top duration-300">
+            <AlertCircle size={14} className="text-yellow-600 shrink-0" />
+            <span>대화 기록을 불러오지 못했습니다. 새 대화로 시작합니다.</span>
           </div>
         )}
       </div>

@@ -1,165 +1,257 @@
 'use client';
 
 import Link from 'next/link'
-import { FileText, Upload, Plus, Loader2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-// import { parseDocxToRetainedHtml } from '@/lib/utils/document' // removed legacy parser
+import { 
+  ArrowRight, 
+  Sparkles, 
+  MessageSquare, 
+  List, 
+  FileText, 
+  ChevronRight, 
+  Upload, 
+  Eye, 
+  History 
+} from 'lucide-react'
 
-export default function HomePage() {
+export default function LandingPage() {
   const router = useRouter()
   const supabase = createClient()
-  
-  const [isCreating, setIsCreating] = useState(false)
-  const [isUploading, setIsUploading] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isScrolled, setIsScrolled] = useState(false)
 
-  const handleCreateEmptyDocument = async () => {
-    setIsCreating(true)
-    try {
-      const { data, error } = await supabase
-        .from('documents')
-        .insert({ title: '제목 없는 문서', content_html: '<h1>제목 없는 문서</h1><p><br/></p>', user_id: null })
-        .select()
-        .single()
-
-      if (error || !data) {
-        console.error('Failed to create document:', error)
-        alert('문서 생성에 실패했습니다.')
-        setIsCreating(false)
-        return
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        router.replace('/dashboard')
+      } else {
+        setIsLoading(false)
       }
-
-      router.push(`/editor/${data.id}`)
-    } catch (error) {
-      console.error('Error creating document:', error)
-      alert('오류가 발생했습니다.')
-      setIsCreating(false)
     }
-  }
+    checkUser()
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    setIsUploading(true)
-    try {
-      const title = file.name.replace(/\.docx$/i, '')
-
-      // 1. Upload DOCX file to Supabase Storage
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${Math.random()}.${fileExt}`
-      const filePath = `documents/${fileName}`
-
-      const { error: uploadError } = await supabase.storage
-        .from('files') // assuming a bucket named 'files' exists
-        .upload(filePath, file)
-
-      if (uploadError) {
-        console.error('Failed to upload file to storage:', uploadError)
-        alert('파일 업로드에 실패했습니다.')
-        return
-      }
-
-      // 2. Create document record in database with storage path
-      const { data, error } = await supabase
-        .from('documents')
-        .insert({
-            title,
-            content_html: '', // Will be loaded from sfdt via Syncfusion
-            file_path: filePath, // Requires adding file_path column to documents table
-            user_id: null
-        })
-        .select()
-        .single()
-
-      if (error || !data) {
-        console.error('Failed to create document record:', error)
-        alert('문서 생성에 실패했습니다.')
-        return
-      }
-
-      router.push(`/editor/${data.id}`)
-    } catch (error) {
-      console.error('Failed to process upload:', error)
-      alert('업로드 처리 중 오류가 발생했습니다.')
-    } finally {
-      setIsUploading(false)
-      // Reset input
-      event.target.value = ''
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 10)
     }
-  }
+    window.addEventListener('scroll', handleScroll)
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [supabase, router])
 
-  const officialTemplates = [
-    { id: '1', title: '사업계획서', desc: '표준 사업계획서 양식' },
-    { id: '2', title: '운영계획서', desc: '주간/월간 운영계획서 양식' },
-    { id: '3', title: '회의록', desc: '공식 회의록 양식' },
-    { id: '4', title: '제안서', desc: '프로젝트 제안서 양식' },
-  ]
+  if (isLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-white">
+        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    )
+  }
 
   return (
-    <div className="max-w-5xl mx-auto p-8">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">새 문서 시작</h1>
-          <p className="text-gray-600">템플릿을 선택하거나 기존 DOCX 파일을 업로드하여 시작하세요.</p>
-        </div>
-        <button 
-          onClick={handleCreateEmptyDocument}
-          disabled={isCreating}
-          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:bg-blue-400"
-        >
-          {isCreating ? <Loader2 className="animate-spin" size={20} /> : <Plus size={20} />}
-          빈 문서로 시작
-        </button>
-      </div>
-
-      <div className="mb-12">
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 flex flex-col items-center justify-center text-center border-dashed cursor-pointer hover:bg-blue-100 transition-colors relative">
-          {isUploading && (
-            <div className="absolute inset-0 bg-white/80 rounded-xl flex flex-col items-center justify-center z-10 backdrop-blur-sm">
-              <Loader2 className="animate-spin text-blue-600 mb-2" size={32} />
-              <p className="text-blue-800 font-medium">문서 구조를 분석하고 서식을 추출하는 중입니다...</p>
+    <div className="min-h-screen bg-white flex flex-col">
+      {/* Navigation */}
+      <nav className={`fixed top-0 left-0 right-0 z-50 h-20 transition-all duration-200 bg-white/80 backdrop-blur-md flex items-center justify-center px-4 ${isScrolled ? 'border-b border-gray-200' : ''}`}>
+        <div className="max-w-7xl w-full flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-blue-100">
+              문
             </div>
-          )}
-          <div className="bg-white p-3 rounded-full shadow-sm mb-4">
-            <Upload className="text-blue-600" size={24} />
+            <span className="text-2xl font-bold text-gray-900 tracking-tight">문서봇</span>
           </div>
-          <h3 className="text-lg font-bold text-gray-900 mb-1">커스텀 DOCX 파일 업로드</h3>
-          <p className="text-sm text-gray-600 mb-4">
-            사용하시던 워드 파일의 <span className="font-semibold text-blue-600">글꼴, 표, 여백 등 서식을 그대로 유지</span>하면서<br/>
-            AI의 도움을 받아 문서를 편집할 수 있습니다.
-          </p>
-          <input 
-            type="file" 
-            accept=".docx" 
-            className="hidden" 
-            id="docx-upload" 
-            onChange={handleFileUpload}
-            disabled={isUploading}
-          />
-          <label htmlFor="docx-upload" className={`bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors ${isUploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-            파일 선택하기
-          </label>
-        </div>
-      </div>
-
-      <div>
-        <h2 className="text-xl font-bold text-gray-900 mb-4">공식 템플릿</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {officialTemplates.map(template => (
-            <Link key={template.id} href={`/editor?templateId=${template.id}`} className="block group">
-              <div className="border rounded-xl p-6 h-full hover:border-blue-500 hover:shadow-md transition-all bg-white">
-                <div className="bg-gray-100 w-12 h-12 rounded-lg flex items-center justify-center mb-4 group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors">
-                  <FileText size={24} className="text-gray-500 group-hover:text-blue-600" />
-                </div>
-                <h3 className="font-bold text-gray-900 mb-1">{template.title}</h3>
-                <p className="text-sm text-gray-500">{template.desc}</p>
-              </div>
+          <div className="flex items-center gap-4">
+            <span className="hidden sm:inline-flex items-center px-3 py-1 rounded-full bg-green-100 text-green-700 text-xs font-bold">
+              베타 무료 체험
+            </span>
+            <Link 
+              href="/login" 
+              className="text-sm font-semibold text-gray-700 hover:text-blue-600 transition-colors"
+            >
+              로그인
             </Link>
-          ))}
+          </div>
         </div>
-      </div>
+      </nav>
+
+      {/* Hero Section */}
+      <main className="pt-32 pb-20 px-4">
+        <div className="max-w-4xl mx-auto text-center mb-16">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-600 text-sm font-semibold mb-8">
+            <Sparkles size={16} />
+            <span>🎉 베타 출시</span>
+          </div>
+          
+          <h1 className="text-5xl md:text-6xl font-extrabold text-gray-900 mb-6 tracking-tight leading-[1.1]">
+            AI가 함께 쓰는<br/>
+            <span className="text-blue-600">실무 문서 작성 도구</span>
+          </h1>
+          
+          <p className="text-xl text-gray-600 mb-10 max-w-2xl mx-auto leading-relaxed">
+            기획서, 제안서, 보고서 — AI가 목차부터 본문까지 함께 완성합니다.<br className="hidden md:block" />
+            기존 워드 파일 서식도 그대로 유지됩니다.
+          </p>
+
+          <div className="flex flex-col items-center gap-6">
+            <Link 
+              href="/login" 
+              className="flex items-center justify-center gap-2 bg-blue-600 text-white px-8 py-4 rounded-xl text-lg font-bold hover:bg-blue-700 transition-all shadow-xl shadow-blue-200"
+            >
+              구글로 시작하기
+              <ArrowRight size={20} />
+            </Link>
+            
+            <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-gray-500">
+              <span className="flex items-center gap-1">✓ 구글 계정으로 바로 시작</span>
+              <span className="flex items-center gap-1">✓ 신용카드 불필요</span>
+              <span className="flex items-center gap-1">✓ 베타 기간 무료</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Editor Mockup */}
+        <div className="max-w-4xl mx-auto px-4">
+          <div className="rounded-2xl border border-gray-200 shadow-2xl overflow-hidden bg-white">
+            {/* Window Header */}
+            <div className="h-10 bg-gray-50 border-b border-gray-100 flex items-center px-4 gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-red-400"></div>
+              <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+              <div className="w-3 h-3 rounded-full bg-green-400"></div>
+            </div>
+            {/* Window Content */}
+            <div className="flex h-[400px]">
+              {/* Document Side (60%) */}
+              <div className="w-3/5 p-8 border-r border-gray-50 space-y-4">
+                <div className="h-6 bg-gray-100 rounded w-3/4 mb-8"></div>
+                <div className="space-y-2">
+                  <div className="h-3 bg-gray-50 rounded w-full"></div>
+                  <div className="h-3 bg-gray-50 rounded w-full"></div>
+                  <div className="h-3 bg-gray-50 rounded w-5/6"></div>
+                </div>
+                <div className="h-4 bg-gray-100 rounded w-1/2 mt-8"></div>
+                <div className="space-y-2">
+                  <div className="h-3 bg-gray-50 rounded w-full"></div>
+                  <div className="h-3 bg-gray-50 rounded w-full"></div>
+                </div>
+              </div>
+              {/* Chat Side (40%) */}
+              <div className="w-2/5 bg-gray-50 p-6 flex flex-col gap-4">
+                <div className="self-end bg-blue-600 text-white p-3 rounded-2xl rounded-tr-none text-xs max-w-[80%] shadow-sm">
+                  사업계획서 작성해줘
+                </div>
+                <div className="self-start bg-white border border-gray-100 p-3 rounded-2xl rounded-tl-none text-xs max-w-[80%] shadow-sm text-gray-600 leading-relaxed">
+                  목차를 먼저 구성할게요. 시장 분석과 기대 효과를 포함할까요?
+                </div>
+                <div className="self-end bg-blue-600 text-white p-3 rounded-2xl rounded-tr-none text-xs max-w-[80%] shadow-sm">
+                  응, 꼼꼼하게 부탁해!
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      {/* Workflow Section */}
+      <section className="py-24 bg-gray-50 px-4">
+        <div className="max-w-5xl mx-auto text-center">
+          <h2 className="text-3xl font-bold text-gray-900 mb-4">3단계로 완성되는 전문 문서</h2>
+          <p className="text-gray-500 mb-16">AI가 인터뷰부터 본문 작성까지 단계별로 안내합니다</p>
+          
+          <div className="flex flex-col md:flex-row items-center justify-between gap-8 md:gap-4">
+            <div className="flex-1 flex flex-col items-center">
+              <div className="w-16 h-16 bg-white rounded-2xl shadow-md flex items-center justify-center text-blue-600 mb-6 border border-gray-100">
+                <MessageSquare size={32} />
+              </div>
+              <h3 className="text-xl font-bold mb-2">1. AI 인터뷰</h3>
+              <p className="text-gray-500 text-sm leading-relaxed max-w-[240px]">
+                목적, 타겟, 핵심 메시지를 AI와 대화로 정리합니다
+              </p>
+            </div>
+            
+            <ChevronRight className="hidden md:block text-gray-300" size={32} />
+            
+            <div className="flex-1 flex flex-col items-center">
+              <div className="w-16 h-16 bg-white rounded-2xl shadow-md flex items-center justify-center text-blue-600 mb-6 border border-gray-100">
+                <List size={32} />
+              </div>
+              <h3 className="text-xl font-bold mb-2">2. 목차 자동 생성</h3>
+              <p className="text-gray-500 text-sm leading-relaxed max-w-[240px]">
+                업종과 문서 유형에 맞는 목차를 제안하고 직접 편집합니다
+              </p>
+            </div>
+
+            <ChevronRight className="hidden md:block text-gray-300" size={32} />
+
+            <div className="flex-1 flex flex-col items-center">
+              <div className="w-16 h-16 bg-white rounded-2xl shadow-md flex items-center justify-center text-blue-600 mb-6 border border-gray-100">
+                <FileText size={32} />
+              </div>
+              <h3 className="text-xl font-bold mb-2">3. 본문 완성</h3>
+              <p className="text-gray-500 text-sm leading-relaxed max-w-[240px]">
+                각 섹션을 AI가 전문가 수준으로 채워드립니다
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature Cards Section */}
+      <section className="py-24 px-4">
+        <div className="max-w-6xl mx-auto">
+          <h2 className="text-3xl font-bold text-gray-900 mb-12 text-center">문서봇만의 차별점</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="border border-gray-100 rounded-2xl p-8 hover:border-blue-100 hover:shadow-xl hover:shadow-blue-50 transition-all group">
+              <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-6 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                <Upload size={24} />
+              </div>
+              <h3 className="text-xl font-bold mb-3">기존 워드 파일 그대로</h3>
+              <p className="text-gray-500 leading-relaxed">
+                회사 양식, 폰트, 표 서식을 유지한 채로 AI 편집이 가능합니다. 새로 디자인할 필요가 없습니다.
+              </p>
+            </div>
+
+            <div className="border border-gray-100 rounded-2xl p-8 hover:border-blue-100 hover:shadow-xl hover:shadow-blue-50 transition-all group">
+              <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-6 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                <Eye size={24} />
+              </div>
+              <h3 className="text-xl font-bold mb-3">수정 전 미리보기</h3>
+              <p className="text-gray-500 leading-relaxed">
+                AI가 제안한 내용을 적용 전에 확인하고 수락 또는 거절합니다. 문서의 주도권은 항상 사용자에게 있습니다.
+              </p>
+            </div>
+
+            <div className="border border-gray-100 rounded-2xl p-8 hover:border-blue-100 hover:shadow-xl hover:shadow-blue-50 transition-all group">
+              <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-6 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                <History size={24} />
+              </div>
+              <h3 className="text-xl font-bold mb-3">버전 히스토리</h3>
+              <p className="text-gray-500 leading-relaxed">
+                수동 저장마다 스냅샷이 생성되어 언제든 이전 버전으로 복원합니다. 실수 걱정 없이 자유롭게 작성하세요.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* CTA Section */}
+      <section className="py-20 px-4 bg-blue-600 text-center">
+        <div className="max-w-4xl mx-auto">
+          <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">지금 바로 시작해보세요</h2>
+          <p className="text-blue-100 mb-10 text-lg">베타 기간 동안 모든 기능을 무료로 사용할 수 있습니다</p>
+          <Link 
+            href="/login" 
+            className="inline-flex items-center justify-center bg-white text-blue-600 px-10 py-4 rounded-xl text-lg font-bold hover:bg-blue-50 transition-all shadow-xl shadow-blue-900/20"
+          >
+            구글로 무료 시작하기
+          </Link>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="py-12 border-t border-gray-100 text-center text-gray-400 text-sm">
+        <div className="max-w-7xl mx-auto px-4">
+          <p>&copy; {new Date().getFullYear()} 문서봇. All rights reserved.</p>
+        </div>
+      </footer>
     </div>
   )
 }
