@@ -3,7 +3,7 @@
 import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, FolderOpen } from 'lucide-react'
+import { LayoutDashboard, FolderOpen, LayoutTemplate } from 'lucide-react'
 
 interface AppSidebarProps {
   variant: 'wide' | 'narrow'
@@ -15,6 +15,7 @@ export default function AppSidebar({ variant }: AppSidebarProps) {
   const menuItems = [
     { name: '대시보드', icon: LayoutDashboard, href: '/dashboard' },
     { name: '내 파일', icon: FolderOpen, href: '/mydrive' },
+    { name: '템플릿', icon: LayoutTemplate, href: '/templates' },
   ]
 
   const isWide = variant === 'wide'
