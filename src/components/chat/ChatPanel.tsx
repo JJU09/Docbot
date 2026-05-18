@@ -2,12 +2,10 @@
 
 import { useChat } from '@ai-sdk/react'
 import { type UIMessage } from 'ai'
-import { useEffect, useRef, useState, useMemo } from 'react'
-import { Send, User, Bot, Check, X, AlertCircle } from 'lucide-react'
+import { useEffect, useRef, useState, useMemo, forwardRef, useImperativeHandle } from 'react'
+import { Send, User, Bot, Check, X, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
-import TocBuilder from '../template/TocBuilder'
-import { OptionPicker } from './OptionPicker'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useEditor } from '@/contexts/EditorContext'
@@ -43,19 +41,32 @@ function UpdateEditorTool({
     if (status === 'pending' && !hasPreviewed.current && editorRef?.current) {
       hasPreviewed.current = true
       
-      editorRef.current.previewSelection(
-        args.modifiedHtml, 
-        args.textBefore, 
-        args.targetText, 
-        args.textAfter,
-        'text',
-        args.targetKeyword
-      )
-        .then((success: boolean | void) => {
-          if (success === false) {
-            setStatus('rejected')
-          }
-        })
+      const currentText = editorRef.current.getText() || '';
+      const isDocumentEmpty = currentText.trim().length === 0;
+
+      // 새 문서(또는 완전 빈 문서)이면서 대상 텍스트가 명확하지 않을 때는 전체 덮어쓰기 로직으로 폴백
+      if (isDocumentEmpty || (!args.targetText && !args.targetKeyword)) {
+        console.log('[DEBUG-CHAT] 문서가 비어있거나 targetText가 없어 전체 내용을 삽입합니다.');
+        editorRef.current.replaceSelection(args.modifiedHtml)
+          .then(() => {
+            setStatus('applied');
+            addToolOutput({ tool: toolName, toolCallId, output: '시스템 알림: 새 문서에 초안이 성공적으로 삽입되었습니다.' });
+          });
+      } else {
+        editorRef.current.previewSelection(
+          args.modifiedHtml, 
+          args.textBefore, 
+          args.targetText, 
+          args.textAfter,
+          'text',
+          args.targetKeyword
+        )
+          .then((success: boolean | void) => {
+            if (success === false) {
+              setStatus('rejected')
+            }
+          })
+      }
     }
   }, [args, editorRef, status, toolCallId, toolName, addToolOutput])
 
@@ -137,6 +148,221 @@ function UpdateEditorTool({
       </div>
     </div>
   )
+}
+
+// ==================== AskClarificationTool (다중 질문 & 다중 선택 위저드) ====================
+function AskClarificationWizard({
+  args,
+  toolCallId,
+  append,
+  addToolOutput,
+  editorContext,
+  selectedHtml,
+  selectedText
+}: {
+  args: {
+    questions?: {
+      question: string;
+      options: { label: string; value: string }[];
+      allowMultiple?: boolean;
+    }[];
+    // 하위 호환성 (단일 질문)
+    question?: string;
+    options?: { label: string; value: string }[];
+    allowMultiple?: boolean;
+  };
+  toolCallId: string;
+  append: any;
+  addToolOutput: any;
+  editorContext: string;
+  selectedHtml: string | null;
+  selectedText: string;
+}) {
+  const questions = useMemo(() => {
+    if (args.questions && args.questions.length > 0) return args.questions;
+    if (args.question && args.options) {
+      return [{ question: args.question, options: args.options, allowMultiple: args.allowMultiple }];
+    }
+    return [];
+  }, [args]);
+
+  const [currentStep, setCurrentStep] = useState(0);
+  const [answers, setAnswers] = useState<Record<number, string[]>>({});
+  const [customInput, setCustomInput] = useState('');
+
+  if (questions.length === 0) return null;
+
+  const currentQ = questions[currentStep];
+  const isMultiple = currentQ.allowMultiple;
+  const currentAnswers = answers[currentStep] || [];
+  const isLastStep = currentStep === questions.length - 1;
+
+  const handleToggleOption = (value: string) => {
+    if (isMultiple) {
+      setAnswers(prev => {
+        const selected = prev[currentStep] || [];
+        if (selected.includes(value)) {
+          return { ...prev, [currentStep]: selected.filter(v => v !== value) };
+        } else {
+          return { ...prev, [currentStep]: [...selected, value] };
+        }
+      });
+    } else {
+      setAnswers(prev => ({ ...prev, [currentStep]: [value] }));
+    }
+  };
+
+  const handleNextOrSubmit = (immediateValue?: string) => {
+    const finalSelection = immediateValue 
+      ? [immediateValue] 
+      : customInput.trim() 
+        ? [...currentAnswers, customInput.trim()] 
+        : currentAnswers;
+
+    const newAnswers = { ...answers, [currentStep]: finalSelection };
+    setAnswers(newAnswers);
+    setCustomInput('');
+
+    if (isLastStep) {
+      // 위저드 완료 -> 제출
+      let formattedText = '';
+      let toolOutputText = '사용자가 다음의 응답을 완료했습니다:\n';
+      
+      questions.forEach((q, idx) => {
+        const ans = newAnswers[idx] || [];
+        formattedText += `[질문] ${q.question}\n답변 : ${ans.join(', ')}\n\n`;
+        toolOutputText += `- ${q.question}: ${ans.join(', ')}\n`;
+      });
+
+      addToolOutput({
+        tool: 'askClarification',
+        toolCallId,
+        output: toolOutputText.trim()
+      });
+
+      append(
+        { role: 'user', content: formattedText.trim() }, 
+        { body: { selectedHtml, selectedText, editorContext } }
+      );
+    } else {
+      // 다음 스텝
+      setCurrentStep(prev => prev + 1);
+    }
+  };
+
+  return (
+    <div className="px-4 pb-4 flex flex-col gap-3 animate-in slide-in-from-bottom-2 fade-in">
+      <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 shadow-sm w-full relative">
+        {questions.length > 1 && (
+          <div className="absolute top-4 right-4 flex items-center gap-0.5 bg-white border border-blue-100 rounded-full px-1 py-0.5 shadow-sm">
+            <button 
+              onClick={() => setCurrentStep(prev => Math.max(0, prev - 1))}
+              disabled={currentStep === 0}
+              className="p-1 rounded-full text-blue-500 hover:bg-blue-50 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-xs font-bold text-blue-700 px-1">
+              {currentStep + 1} / {questions.length}
+            </span>
+            <button 
+              onClick={() => handleNextOrSubmit()}
+              disabled={currentAnswers.length === 0 && !customInput.trim()}
+              className="p-1 rounded-full text-blue-500 hover:bg-blue-50 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        )}
+        
+        <div className="flex items-center gap-2 mb-3 pr-24">
+          <div className="bg-blue-100 p-1.5 rounded-full text-blue-700">
+            <Bot size={16} />
+          </div>
+          <span className="text-sm font-semibold text-blue-900">
+            {isMultiple ? '복수 선택 가능' : '추가 정보가 필요합니다'}
+          </span>
+        </div>
+        
+        <p className="text-sm text-blue-800 font-medium mb-4 ml-1">
+          {currentQ.question}
+        </p>
+        
+        <div className="flex flex-col gap-2">
+          {currentQ.options?.map((opt, i) => {
+            const isSelected = currentAnswers.includes(opt.value);
+            return (
+              <button
+                key={i}
+                onClick={() => {
+                  if (isMultiple) {
+                    handleToggleOption(opt.value);
+                  } else {
+                    handleNextOrSubmit(opt.value);
+                  }
+                }}
+                className={cn(
+                  "w-full text-left px-4 py-3 bg-white text-sm font-medium rounded-lg border transition-all shadow-sm active:scale-[0.99]",
+                  isSelected 
+                    ? "border-blue-500 bg-blue-50 text-blue-700 ring-1 ring-blue-200" 
+                    : "border-blue-100 text-blue-700 hover:border-blue-300 hover:shadow"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span>{opt.label}</span>
+                  {isMultiple && (
+                    <div className={cn("w-4 h-4 rounded border flex items-center justify-center", isSelected ? "bg-blue-500 border-blue-500 text-white" : "border-gray-300")}>
+                      {isSelected && <Check size={12} strokeWidth={3} />}
+                    </div>
+                  )}
+                  {!isMultiple && <span className="text-blue-300">→</span>}
+                </div>
+              </button>
+            );
+          })}
+          
+          {/* 직접 입력란 */}
+          <div className="relative mt-1">
+            <input 
+              type="text"
+              placeholder="기타 (직접 입력)"
+              value={customInput}
+              onChange={(e) => setCustomInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && customInput.trim()) {
+                  e.preventDefault();
+                  handleNextOrSubmit();
+                }
+              }}
+              className="w-full pl-4 pr-12 py-3 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 transition-all shadow-sm"
+            />
+            {!isMultiple && (
+              <button 
+                onClick={() => handleNextOrSubmit()}
+                disabled={!customInput.trim()}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md font-bold transition-colors disabled:text-gray-300 text-blue-600 hover:bg-blue-50 disabled:hover:bg-transparent"
+              >
+                →
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 다중 선택 시에만 하단 완료 버튼 제공 */}
+        {isMultiple && (
+          <div className="mt-4 pt-3 border-t border-blue-100/50 flex justify-end">
+            <button
+              onClick={() => handleNextOrSubmit()}
+              disabled={currentAnswers.length === 0 && !customInput.trim()}
+              className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 transition-colors shadow-sm"
+            >
+              {isLastStep ? <><Check size={16}/> 선택 완료</> : '다음 단계 →'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ==================== ✨ UpdateTableTool (새로 추가) ====================
@@ -256,14 +482,14 @@ interface ChatPanelProps {
 
 const HIDDEN_ANALYZE_PROMPT = "[SYSTEM: 현재 에디터에 로드된 문서의 구조를 분석하고 요약 리포트를 작성해줘]";
 
-export default function ChatPanel({ 
+const ChatPanel = forwardRef<{ sendMessage: (msg: { text: string }) => void }, ChatPanelProps>(({ 
   documentId,
   editorContext,
   isNewDocument = false,
   initialPrompt,
   isUploaded = false,
   isReady = false
-}: ChatPanelProps) {
+}, ref) => {
   const { selectedHtml, selectedText, editorRef } = useEditor()
   const [showHistoryError, setShowHistoryError] = useState(false)
 
@@ -312,13 +538,27 @@ export default function ChatPanel({
     }
   }, [isResizing])
 
-  const {
-    messages,
-    sendMessage,
-    status,
-    addToolOutput,
-    setMessages,
-  } = useChat({
+  const chatHelpers = useChat({
+    api: '/api/chat',
+    id: documentId,
+    sendAutomaticallyWhen: ({ messages }) => {
+      if (messages.length === 0) return false;
+      
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role !== 'assistant') return false;
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const hasToolCalls = lastMessage.parts?.some((part: any) => part.type.startsWith('tool-'));
+      if (!hasToolCalls) return false;
+      
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const hasPending = lastMessage.parts?.some((part: any) => 
+        part.type.startsWith('tool-') && 
+        (part.state === 'input-streaming' || part.state === 'input-available' || !('output' in part) || !part.output)
+      );
+      
+      return !hasPending;
+    },
     onError: (err) => {
       alert('챗 서버와의 통신 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
       console.error('Chat error:', err);
@@ -330,12 +570,12 @@ export default function ChatPanel({
         const supabase = createClient();
 
         // 직전 user 메시지 저장 (먼저 저장하여 순서 보장)
-        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+        const lastUserMsg = [...chatHelpers.messages].reverse().find(m => m.role === 'user');
         if (lastUserMsg) {
           const userText = lastUserMsg.parts
             ?.filter((p: any) => p.type === 'text')
             .map((p: any) => p.text)
-            .join('') || lastUserMsg.content || '';
+            .join('') || '';
             
           if (userText) {
             // 이미 저장된 동일한 사용자 메시지가 최근에 있는지 확인 (중복 저장 방지)
@@ -364,13 +604,15 @@ export default function ChatPanel({
 
         // assistant 메시지 저장
         const assistantMsg = (message as any).message || message;
-        let textContent = assistantMsg.content || '';
+        let textContent = '';
         
-        if (!textContent && assistantMsg.parts) {
+        if (assistantMsg.parts) {
           textContent = assistantMsg.parts
             .filter((p: any) => p.type === 'text')
             .map((p: any) => p.text)
             .join('');
+        } else if (assistantMsg.content) {
+          textContent = assistantMsg.content;
         }
 
         if (textContent) {
@@ -386,15 +628,58 @@ export default function ChatPanel({
     },
   })
 
+  const {
+    messages,
+    status,
+    addToolOutput,
+    setMessages,
+  } = chatHelpers
+
+  // @ts-expect-error append is available in newer ai versions or fallback to sendMessage
+  const append = (chatHelpers.append || chatHelpers.sendMessage) as any
+
   const isStreaming = status === 'submitted' || status === 'streaming'
+
+  const pendingClarificationCall = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pendingPart = m.parts?.find((part: any) => 
+        (part.type === 'tool-askClarification' || 
+        (part.type === 'tool-invocation' && part.toolInvocation?.toolName === 'askClarification')) &&
+        (part.state === 'call' || part.state === 'input-available' || part.toolInvocation?.state === 'call' || part.toolInvocation?.state === 'partial-call') &&
+        (!('output' in part) || !part.output)
+      );
+
+      if (pendingPart) {
+        return pendingPart.toolInvocation || pendingPart;
+      }
+    }
+    return null;
+  }, [messages]);
 
   const hasPendingTool = messages.some((m: UIMessage) => 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     m.parts?.some((part: any) => 
-      part.type.startsWith('tool-') && 
-      (part.state === 'input-streaming' || part.state === 'input-available')
+      (part.type === 'tool-invocation' && (part.state === 'call' || part.state === 'input-available')) ||
+      (part.type === 'tool-call' && (!('output' in part) || !part.output))
     )
   )
+
+  useImperativeHandle(ref, () => ({
+    sendMessage: (msg: { text: string }) => {
+      append(
+        { role: 'user', content: msg.text }, 
+        {
+          body: {
+            selectedHtml,
+            selectedText,
+            editorContext: truncatedContext,
+          }
+        }
+      );
+    }
+  }));
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInput(e.target.value)
@@ -419,13 +704,16 @@ export default function ChatPanel({
       })
     }
 
-    sendMessage({ text: input }, {
-      body: {
-        selectedHtml,
-        selectedText,
-        editorContext: truncatedContext,
+    append(
+      { role: 'user', content: input }, 
+      {
+        body: {
+          selectedHtml,
+          selectedText,
+          editorContext: truncatedContext,
+        }
       }
-    })
+    )
     setInput('')
   }
 
@@ -486,26 +774,14 @@ export default function ChatPanel({
     if (initialPrompt) {
       // initialPrompt가 있으면 바로 해당 프롬프트로 전송
       setTimeout(() => {
-        sendMessage({ text: initialPrompt }, {
-          body: {
-            selectedHtml,
-            selectedText,
-            editorContext: truncatedContext,
-          }
-        })
+        append({ role: 'user', content: initialPrompt }, { body: { selectedHtml, selectedText, editorContext: truncatedContext } });
       }, 500)
     } else if (isUploaded) {
       // 파일 업로드의 경우 숨김 메시지로 문서 자동 분석 실행
       console.log('[DEBUG-CHAT] HIDDEN_ANALYZE_PROMPT 전송 시도. 현재 editorContext 길이:', truncatedContext?.length || 0);
       setTimeout(() => {
-        console.log('[DEBUG-CHAT] setTimeout 내부에서 sendMessage 호출됨. 전달되는 context 길이:', truncatedContext?.length || 0);
-        sendMessage({ text: HIDDEN_ANALYZE_PROMPT }, {
-          body: {
-            selectedHtml,
-            selectedText,
-            editorContext: truncatedContext,
-          }
-        })
+        console.log('[DEBUG-CHAT] setTimeout 내부에서 전송 호출됨. 전달되는 context 길이:', truncatedContext?.length || 0);
+        append({ role: 'user', content: HIDDEN_ANALYZE_PROMPT }, { body: { selectedHtml, selectedText, editorContext: truncatedContext } });
       }, 800)
     } else {
       // 기존 채팅 기록이 없을 때만 인사말을 출력합니다.
@@ -520,7 +796,7 @@ export default function ChatPanel({
               type: 'text', 
               text: '안녕하세요! 문서를 수정하거나 궁금한 점이 있으시면 언제든 말씀해주세요. 👋'
             }],
-          }
+          } as UIMessage
         ])
       } else {
         // 빈 문서로 시작하는 경우 초기 인삿말
@@ -532,15 +808,22 @@ export default function ChatPanel({
               type: 'text', 
               text: '새로운 문서를 시작하시네요! 👋\n\n어떤 종류의 문서를 작성하실 계획인가요?\n(예: IT 서비스 사업계획서, 주간 운영 보고서, 제안서, 기획안 등)'
             }],
-          }
+          } as UIMessage
         ])
       }
     }
-  }, [isHistoryLoaded, isReady, messages.length, isNewDocument, isUploaded, setMessages, initialPrompt, sendMessage, selectedHtml, selectedText, truncatedContext])
+  }, [isHistoryLoaded, isReady, messages.length, isNewDocument, isUploaded, setMessages, initialPrompt, append, selectedHtml, selectedText, truncatedContext])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  // 디버깅: 현재 messages 배열의 상태를 콘솔에 출력
+  useEffect(() => {
+    if (messages.length > 0) {
+      console.log('[DEBUG-MESSAGES]', JSON.stringify(messages, null, 2));
+    }
   }, [messages])
 
   return (
@@ -618,9 +901,11 @@ export default function ChatPanel({
                       {m.parts?.map((part: any, index: number) => {
                         if (!part.type.startsWith('tool-')) return null;
                         
-                        const toolName = part.type.replace('tool-', '');
-                        const toolCallId = part.toolCallId;
-                        const args = part.input || part.args;
+                        // AI SDK 구버전 및 최신 버전 호환 파싱
+                        const toolInvocation = part.toolInvocation || part;
+                        const toolName = toolInvocation.toolName || (part.type.startsWith('tool-') ? part.type.replace('tool-', '') : '');
+                        const toolCallId = toolInvocation.toolCallId;
+                        const args = toolInvocation.args || toolInvocation.input || part.args || part.input;
 
                         // ✨ 표 업데이트 도구 렌더링 연결
                         if (toolName === 'updateTable') {
@@ -632,41 +917,6 @@ export default function ChatPanel({
                               toolCallId={toolCallId}
                               toolName={toolName}
                               addToolOutput={addToolOutput}
-                            />
-                          );
-                        }
-
-                        if (toolName === 'generateToc') {
-                          if (!args || !args.title || !args.items) return null;
-                          return (
-                            <TocBuilder
-                              key={`${toolCallId}-${index}`}
-                              title={args.title}
-                              items={args.items}
-                              recommendations={args.recommendations || []}
-                              onApply={async (finalHtml: string) => {
-                                if (editorRef?.current) {
-                                  await editorRef.current.replaceSelection(finalHtml);
-                                }
-                                
-                                addToolOutput({
-                                  tool: toolName,
-                                  toolCallId,
-                                  output: JSON.stringify({
-                                    status: "success",
-                                    message: "에디터에 목차 및 템플릿 반영 완료",
-                                    system_instruction: "텍스트 응답 최소화 규칙을 무시하고, 사용자에게 어떤 구조로 문서를 작성 완료했는지 텍스트로 친절하게 브리핑해주세요. 그리고 추가로 이어서 작업할 내용이 있는지 질문하세요.",
-                                    applied_structure: args.items.map((item: { level: number; text: string }) => `${'  '.repeat(item.level - 1)}- ${item.text}`).join('\n')
-                                  })
-                                });
-                              }}
-                              onCancel={() => {
-                                addToolOutput({
-                                  tool: toolName,
-                                  toolCallId,
-                                  output: JSON.stringify({ status: "skipped", message: "사용자가 목차 생성을 건너뛰었습니다." })
-                                });
-                              }}
                             />
                           );
                         }
@@ -684,30 +934,9 @@ export default function ChatPanel({
                           );
                         }
 
+                        // askClarification은 이제 메시지 루프 내부가 아닌 하단 Quick Reply 영역에서 렌더링되므로 여기서 무시
                         if (toolName === 'askClarification') {
-                          if (!args || !args.question || !args.options) return null;
-                          return (
-                            <OptionPicker
-                              key={`${toolCallId}-${index}`}
-                              question={args.question}
-                              options={args.options}
-                              allowMultiple={args.allowMultiple}
-                              onSelect={(value) => {
-                                addToolOutput({
-                                  tool: toolName,
-                                  toolCallId,
-                                  output: `사용자가 다음 옵션을 선택했습니다: ${value}`
-                                });
-                              }}
-                              onCancel={() => {
-                                addToolOutput({
-                                  tool: toolName,
-                                  toolCallId,
-                                  output: '사용자가 옵션 선택을 건너뛰었습니다.'
-                                });
-                              }}
-                            />
-                          );
+                          return null;
                         }
                         
                         return null;
@@ -737,6 +966,19 @@ export default function ChatPanel({
               <div ref={messagesEndRef} />
             </div>
 
+      {/* ✨ Quick Reply Wizard (askClarification 연동) */}
+      {pendingClarificationCall && ((pendingClarificationCall as any).args || (pendingClarificationCall as any).input) && (
+        <AskClarificationWizard
+          args={(pendingClarificationCall as any).args || (pendingClarificationCall as any).input}
+          toolCallId={(pendingClarificationCall as any).toolCallId || 'unknown'}
+          append={append}
+          addToolOutput={addToolOutput}
+          editorContext={truncatedContext}
+          selectedHtml={selectedHtml}
+          selectedText={selectedText}
+        />
+      )}
+
       <form onSubmit={handleSubmit} className="p-4 bg-white border-t">
         <div className="relative">
           <input
@@ -757,4 +999,6 @@ export default function ChatPanel({
       </form>
     </div>
   )
-}
+})
+
+export default ChatPanel;

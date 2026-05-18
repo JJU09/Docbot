@@ -10,6 +10,7 @@ import { createClient } from '@/lib/supabase/client'
 import SyncfusionDocEditor from '@/components/editor/SyncfusionDocEditor'
 import { EditorProvider, useEditor } from '@/contexts/EditorContext'
 import ErrorBoundary from '@/components/common/ErrorBoundary'
+import { FloatingToolbar } from '@/components/editor/FloatingToolbar'
 import { FileX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { creationIntentStore } from '@/lib/store/creationIntent'
@@ -51,6 +52,7 @@ function EditorContentInner() {
 
   const isInitializing = initStatus === 'loading' || initStatus === 'idle';
   const hasLoadError = initStatus === 'error';
+  const chatPanelRef = useRef<{ sendMessage: (msg: { text: string }) => void }>(null);
 
   const handleContentChange = useCallback((text: string) => {
     setContent(text);
@@ -67,8 +69,8 @@ function EditorContentInner() {
     complete: '완료!'
   };
 
-  const handleSelectionChange = useCallback((html: string, text: string) => {
-    setSelection(html, text);
+  const handleSelectionChange = useCallback((html: string, text: string, isSelectionActive: boolean) => {
+    setSelection(html, text, isSelectionActive);
   }, [setSelection]);
 
   // 브라우저 탭 제목 동기화
@@ -343,6 +345,13 @@ function EditorContentInner() {
                   onSelectionChange={handleSelectionChange}
                   onContentChange={handleContentChange}
                 />
+                <FloatingToolbar 
+                  onAction={(prompt) => {
+                    if (chatPanelRef.current) {
+                      chatPanelRef.current.sendMessage({ text: prompt })
+                    }
+                  }} 
+                />
               </ErrorBoundary>
             )}
             
@@ -371,7 +380,9 @@ function EditorContentInner() {
             </div>
           }
         >
+          {/* @ts-ignore - ref passing for programmatic message sending */}
           <ChatPanel
+            ref={chatPanelRef}
             documentId={documentId}
             editorContext={content}
             isNewDocument={isNewDocument}

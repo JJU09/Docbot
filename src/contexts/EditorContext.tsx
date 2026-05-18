@@ -9,7 +9,8 @@ interface EditorContextValue {
   // 선택 영역 상태도 여기서 관리
   selectedHtml: string;
   selectedText: string;
-  setSelection: (html: string, text: string) => void;
+  isSelectionActive: boolean;
+  setSelection: (html: string, text: string, isSelectionActive: boolean) => void;
 }
 
 const EditorContext = createContext<EditorContextValue | null>(null);
@@ -17,20 +18,21 @@ const EditorContext = createContext<EditorContextValue | null>(null);
 export function EditorProvider({ children, documentId }: { children: ReactNode; documentId: string }) {
   const editorRef = useRef<SyncfusionDocEditorRef>(null);
   const [title, setTitle] = useState('무제 문서');
-  const [selection, setSelection] = useState({ html: '', text: '' });
+  const [selection, setSelection] = useState({ html: '', text: '', isActive: false });
 
-  const setSelectionHandler = (html: string, text: string) => {
-    setSelection({ html, text });
+  const setSelectionHandler = (html: string, text: string, isSelectionActive: boolean) => {
+    setSelection({ html, text, isActive: isSelectionActive });
   };
 
   return (
-    <EditorContext.Provider value={{ 
-      editorRef, 
-      documentId, 
-      title, 
+    <EditorContext.Provider value={{
+      editorRef,
+      documentId,
+      title,
       setTitle,
       selectedHtml: selection.html,
       selectedText: selection.text,
+      isSelectionActive: selection.isActive,
       setSelection: setSelectionHandler
     }}>
       {children}

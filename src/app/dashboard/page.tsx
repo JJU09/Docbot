@@ -225,9 +225,9 @@ export default function NewDashboardPage() {
                   accept=".docx" 
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
                   onChange={handleFileUpload}
-                  title="워드 파일(.docx) 가져오기"
+                  title=""
                 />
-                <div className="border border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-md transition-all bg-white flex items-center gap-4">
+                <div className="border border-gray-200 rounded-xl p-4 group-hover:border-blue-500 group-hover:shadow-md transition-all bg-white flex items-center gap-4">
                   <div className="bg-green-50 text-green-600 w-10 h-10 rounded-full flex items-center justify-center shrink-0 group-hover:-translate-y-1 transition-transform">
                     <Upload size={20} />
                   </div>

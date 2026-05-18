@@ -160,15 +160,64 @@ export interface SyncfusionDocEditorRef {
 }
 
 interface SyncfusionDocEditorProps {
-  onSelectionChange?: (selectedHtml: string, selectedText: string) => void;
+  onSelectionChange?: (selectedHtml: string, selectedText: string, isSelectionActive: boolean) => void;
   onContentChange?: (text: string) => void;
 }
 
 const containerStyle = { display: 'block' };
 
+/**
+ * SFDT JSON에서 커서/선택 상태를 전혀 건드리지 않고 순수하게 텍스트를 추출합니다.
+ * 
+ * SFDT 구조:
+ * { sections: [ { blocks: [ { inlines: [ { text: "..." }, ... ] } ] } ] }
+ * 
+ * block 안의 inlines 배열을 순회하며 text 필드를 모아 줄바꿈으로 연결합니다.
+ * 표(table) 안의 셀도 재귀적으로 처리합니다.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractTextFromSfdt(sfdt: string): string {
+  try {
+    const doc = JSON.parse(sfdt);
+    const lines: string[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const collectBlocks = (blocks: any[]): void => {
+      if (!Array.isArray(blocks)) return;
+      for (const block of blocks) {
+        if (block.rows) {
+          // 표(table): rows > cells > blocks 재귀
+          for (const row of block.rows) {
+            for (const cell of row.cells) {
+              collectBlocks(cell.blocks);
+            }
+          }
+        } else if (block.inlines) {
+          // 일반 단락
+          const lineText = block.inlines
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((inline: any) => inline.text ?? '')
+            .join('');
+          lines.push(lineText);
+        }
+      }
+    };
+
+    for (const section of doc.sections ?? []) {
+      collectBlocks(section.blocks ?? []);
+    }
+
+    return lines.join('\n').trim();
+  } catch (err) {
+    console.error('SFDT 텍스트 파싱 실패:', err);
+    return '';
+  }
+}
+
 const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDocEditorProps>(
   (props, ref) => {
     const containerRef = useRef<DocumentEditorContainerComponent>(null);
+    const isMouseSelectingRef = useRef(false);
 
     const handleSelectionChange = useCallback(() => {
       const editor = containerRef.current?.documentEditor;
@@ -176,42 +225,36 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
 
       const selection = editor.selection;
       if (!selection || selection.isEmpty) {
-        props.onSelectionChange('', '');
+        props.onSelectionChange('', '', false);
+        return;
+      }
+
+      // 마우스로 드래그 중일 때만 선택으로 인정
+      if (!isMouseSelectingRef.current) {
+        props.onSelectionChange('', '', false);
         return;
       }
 
       const selectedText = selection.text?.trim() || '';
       if (!selectedText) {
-        props.onSelectionChange('', '');
+        props.onSelectionChange('', '', false);
         return;
       }
 
       const selectedSfdt = selection.sfdt;
-      props.onSelectionChange(selectedSfdt, selectedText);
+      props.onSelectionChange(selectedSfdt, selectedText, true);
     }, [props]);
 
-    // 네이티브 에디터 API를 통해 렌더링된 전체 텍스트를 추출하는 헬퍼 함수
+    /**
+     * 커서/선택 상태를 건드리지 않고 전체 텍스트를 추출합니다.
+     * serialize()는 현재 선택 영역에 영향을 주지 않습니다.
+     */
     const extractFullTextDirectly = useCallback(() => {
       const editor = containerRef.current?.documentEditor;
       if (!editor) return '';
-      
       try {
-        // 기존 선택 상태 저장
-        const originalSelectionStart = editor.selection.start;
-        const originalSelectionEnd = editor.selection.end;
-        
-        // 전체 선택하여 텍스트 긁기
-        editor.selection.selectAll();
-        const extractedText = editor.selection.text || '';
-        
-        // 선택 상태 복구
-        if (originalSelectionStart && originalSelectionEnd) {
-          editor.selection.select(originalSelectionStart, originalSelectionEnd);
-        } else {
-          editor.selection.moveToDocumentStart();
-        }
-        
-        return extractedText.trim();
+        const sfdt = editor.serialize();
+        return extractTextFromSfdt(sfdt);
       } catch (err) {
         console.error('텍스트 직접 추출 실패:', err);
         return '';
@@ -293,8 +336,8 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
           editor.editor.insertBookmark(tempBookmark);
           const hadSelection = !editor.selection.isEmpty;
 
-          editor.selection.selectAll();
-          const fullText = editor.selection.text || '';
+          // serialize()로 전체 텍스트 추출 — 커서 건드리지 않음
+          const fullText = extractTextFromSfdt(editor.serialize());
 
           editor.selection.selectBookmark(tempBookmark);
           editor.editor.deleteBookmark(tempBookmark);
@@ -354,9 +397,6 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
             if (!bestMatchResult && targetText) {
               const normalizedQuery = normalize(targetText);
               console.log(`2단계 시도: ${normalizedQuery}`);
-              // Syncfusion findAll은 완전 일치를 찾으므로 정규화된 텍스트가 에디터 내부의 정규화된 텍스트와 일치해야 함
-              // 하지만 findAll 자체가 정규화 검색을 지원하지 않으므로, 이 단계는 findAll 대신 수동 인덱스 탐색 후 해당 텍스트를 findAll 하는 식으로 우회하거나,
-              // 혹은 targetText 내부의 핵심 구를 찾아 시도함. 여기서는 공백이 제거된 버전으로 시도.
               // @ts-expect-error syncfusion types might be incomplete
               const results: any[] = editor.searchModule.findAll(normalizedQuery, 'None');
               if (results && results.length > 0) {
@@ -658,7 +698,23 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
     }));
 
     return (
-      <div className="w-full h-full">
+      <div 
+        className="w-full h-full"
+        onMouseDown={() => {
+          // 새 드래그 시작 시 항상 활성화 (이전 선택도 초기화)
+          isMouseSelectingRef.current = true;
+        }}
+        onMouseUp={() => {
+          const editor = containerRef.current?.documentEditor;
+          const hasSelection = editor && !editor.selection?.isEmpty;
+          // 선택된 텍스트가 있으면 드래그 상태를 유지해 툴바가 닫히지 않도록 함
+          // 다음 mouseDown 시 초기화됨
+          if (!hasSelection) {
+            isMouseSelectingRef.current = false;
+          }
+        }}
+        style={{ height: '100%' }}
+      >
         <DocumentEditorContainerComponent
           id="container"
           ref={containerRef}
@@ -666,7 +722,7 @@ const SyncfusionDocEditor = memo(forwardRef<SyncfusionDocEditorRef, SyncfusionDo
           width="100%"
           style={containerStyle}
           enableToolbar={true}
-          toolbarItems={CUSTOM_TOOLBAR_ITEMS}
+          toolbarItems={CUSTOM_TOOLBAR_ITEMS as (import('@syncfusion/ej2-documenteditor').CustomToolbarItemModel | import('@syncfusion/ej2-documenteditor').ToolbarItem)[]}
           locale="ko"
           selectionChange={handleSelectionChange}
           contentChange={handleContentChange}

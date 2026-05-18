@@ -1,6 +1,6 @@
 // .env.local에 LITELLM_MODEL 변수를 추가하여 사용할 모델을 설정하세요. (기본값: gemini/gemini-3.0-flash-preview)
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { streamText, tool, convertToModelMessages } from 'ai'
+import { streamText, tool, createUIMessageStreamResponse } from 'ai'
 import { z } from 'zod'
 
 export const maxDuration = 30
@@ -10,6 +10,42 @@ const litellm = createOpenAICompatible({
   baseURL: process.env.LITELLM_BASE_URL ?? 'https://litellm.must.codes',
   apiKey: process.env.LITELLM_API_KEY ?? undefined,
 })
+
+/**
+ * useChat(AI SDK v6)이 보내는 UIMessage를 CoreMessage 형식으로 안전하게 변환합니다.
+ * UIMessage는 content 필드 없이 parts 배열만 가집니다.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeMessages(messages: any[]) {
+  return messages
+    .filter((m) => m?.role && (m?.content != null || Array.isArray(m?.parts)))
+    .map((m) => {
+      let text = '';
+
+      if (typeof m.content === 'string' && m.content) {
+        // 구버전 형식: content가 문자열
+        text = m.content;
+      } else if (Array.isArray(m.parts)) {
+        // AI SDK v6 UIMessage 형식: parts 배열에서 text 파트만 추출
+        text = m.parts
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .filter((p: any) => p.type === 'text')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .map((p: any) => p.text ?? '')
+          .join('');
+      } else if (Array.isArray(m.content)) {
+        // content가 배열인 경우
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        text = m.content.map((p: any) => p?.text ?? '').join('');
+      }
+
+      return {
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: text,
+      };
+    })
+    .filter((m) => m.content.trim() !== ''); // 빈 메시지 제거
+}
 
 export async function POST(req: Request) {
   const { messages, editorContext, selectedText, selectedHtml } = await req.json()
@@ -22,11 +58,9 @@ export async function POST(req: Request) {
   let contextInstruction = '';
 
   if (selectedText) {
-    // 1. 선택 영역이 있는 경우: 선택된 텍스트만 강조, 전체 컨텍스트는 비용 절감을 위해 생략하거나 최소화 안내
     effectiveContext = '(선택 영역 분석을 위해 생략됨)';
     contextInstruction = '사용자가 텍스트를 선택했습니다. 전체 문서보다는 "선택된 텍스트"의 수정에 집중하세요.';
   } else if (messages.length > 1 && !isRequestingFullContext) {
-    // 2. 대화 중이고(첫 요청 아님) 전체 요청 키워드가 없는 경우: 컨텍스트 제외
     effectiveContext = '(비용 절감을 위해 생략됨)';
     contextInstruction = `문서 전체 내용은 대화 초반에 이미 분석되었습니다.
 사용자가 명시적으로 문서 전체 재분석을 요청할 때만 'NEED_FULL_CONTEXT'라고 응답하세요.`;
@@ -35,12 +69,12 @@ export async function POST(req: Request) {
   const isDocumentEmpty = !editorContext || editorContext.trim().length < 50;
 
   const workflowPrompt = isDocumentEmpty
-    ? `[🚨 빈 문서 작성 워크플로우 - 반드시 다음 순서로 진행하세요]
-1. 인터뷰 (필요 시): 사용자가 새 문서 작성을 요청하거나 정보가 부족할 때, 바로 텍스트를 작성하지 마세요. 반드시 **askClarification** 도구를 호출하여 목적, 타겟 독자, 강조 사항 등을 1~2회 질문하세요.
-2. 목차 생성 (TOC): 인터뷰로 정보가 충분히 수집되었거나 사용자가 목차를 요청하면, **generateToc** 도구를 호출하여 목차를 제안하세요.
-3. 본문 작성 및 문서 완성: 목차가 에디터에 적용된 후 작성을 요청받거나 이어서 작성할 차례가 되면, **updateEditor** 도구를 호출하여 문서를 완성하세요.`
+    ? `[🚨 문서 초안 작성 워크플로우 - 반드시 다음 순서로 진행하세요]
+1. 자율적 맥락 파악: 사용자의 첫 요청이 너무 모호한 경우에만 **askClarification** 도구를 호출하여 핵심 맥락(목적, 타겟 등)을 파악하세요. (한 번에 최대 3개의 질문을 배열로 전달 가능)
+2. 스마트 초안 작성 (즉시 반영): 충분한 정보가 수집되면, 목차 제안 단계를 생략하고 즉시 **updateEditor** 도구를 호출하여 문서 전체 초안을 작성하세요.
+  * 기존 에디터에 파편화된 메모가 있다면 이를 모두 흡수하여 완성된 글로 덮어쓰세요.`
     : `[🚨 기존 문서 수정 워크플로우]
-- 현재 문서는 이미 내용이 작성되어 있습니다. **사용자가 명시적으로 전체 목차를 다시 짜달라고 요청하지 않는 한 generateToc(목차 생성) 도구는 절대 호출하지 마세요.**
+- 현재 문서는 이미 내용이 작성되어 있습니다.
 - 일반 텍스트 수정 시 **updateEditor** 도구를, 표 수정 시 **updateTable** 도구를 사용하여 기존 문서를 바로 수정하거나 내용을 추가하세요.
 - 정보가 부족하여 수정이 어려운 경우에만 **askClarification**을 호출하여 질문하세요.`;
 
@@ -59,97 +93,65 @@ ${workflowPrompt}
 
 [🚨 강력 준수 규칙]
 - 정보 수집(질문)이 필요할 땐 일반 텍스트 응답을 하지 말고 반드시 **askClarification** 도구를 호출하세요!
+- **[단일 도구 호출 원칙]** 절대로 한 번에 여러 개의 도구를 동시에(병렬로) 호출하지 마세요. 질문할 것이 여러 개 있더라도 한 번에 하나씩만 물어보고 사용자의 답변을 기다리세요.
 - 텍스트 응답은 최소화하고 도구(Tool) 호출을 최우선으로 실행하세요. (단, 도구 실행 결과에서 사용자에게 보고/브리핑을 요청하는 시스템 지시가 포함되어 있다면, 예외적으로 상세하고 친절하게 텍스트로 응답해야 합니다.)
-- ✨ **[도구 건너뛰기 방어]** 사용자가 도구의 사용을 건너뛰거나 거절한 경우: 해당 도구가 필수 도구라 할지라도 절대 재호출하지 마세요. 대신 "알겠습니다. 건너뛰겠습니다. 원하시는 다른 작업이 있으신가요?"와 같이 일반 텍스트로 자연스럽게 응답하세요.
+- ✨ **[자유 입력 허용 로직]** 사용자가 askClarification이 제시한 옵션을 무시하고 직접 텍스트로 대답(도구 취소됨)한 경우, 그 직접 입력한 답변 내용을 문맥으로 삼아 다음 단계(초안 작성 등)를 진행하세요. 절대 다시 같은 질문을 하지 마세요.
+- ✨ **[도구 건너뛰기 방어]** 사용자가 도구의 사용을 명시적으로 건너뛰거나 거절한 경우: 해당 도구가 필수 도구라 할지라도 절대 재호출하지 마세요.
 - 🚨 **[표(Table) 수정 특명]** 사용자가 표의 수정을 요청했을 때, 절대로 **updateEditor** 도구를 사용하지 마세요. 표를 수정할 때는 반드시 **updateTable** 도구를 호출하여 2차원 배열(JSON) 형태로 순수 데이터만 반환해야 합니다. targetKeyword에는 표 내부에 있는 식별 가능한 짧은 고유 단어(예: 특정 헤더명) 1~2개만 입력하세요.`;
 
-  const modelMessages = await convertToModelMessages(messages, {
-    ignoreIncompleteToolCalls: true,
-  })
+  const modelMessages = normalizeMessages(messages);
 
-  const result = streamText({
-    model: litellm(process.env.LITELLM_MODEL ?? 'gemini/gemini-3.0-flash-preview'),
-    system: systemPrompt,
-    messages: modelMessages,
+  try {
+    const result = streamText({
+      model: litellm(process.env.LITELLM_MODEL ?? 'gemini/gemini-3.0-flash-preview'),
+      system: systemPrompt,
+      messages: modelMessages,
 
-    tools: {
-      askClarification: tool({
-        description: '🚨 정보가 부족할 때 사용자에게 선택지를 제시',
-        inputSchema: z.object({
-          question: z.string().describe('사용자에게 보여줄 질문'),
-          options: z.array(z.object({
-            label: z.string().describe('버튼 텍스트'),
-            value: z.string().describe('선택 시 전달될 값'),
-          })).describe('3~5개 옵션 추천'),
-          allowMultiple: z.boolean().optional().default(false),
+      tools: {
+        askClarification: tool({
+          description: '🚨 정보가 부족할 때 사용자에게 선택지를 제시',
+          inputSchema: z.object({
+            questions: z.array(z.object({
+              question: z.string().describe('사용자에게 보여줄 질문'),
+              options: z.array(z.object({
+                label: z.string().describe('버튼 텍스트'),
+                value: z.string().describe('선택 시 전달될 값'),
+              })).describe('3~5개 옵션 추천'),
+              allowMultiple: z.boolean().optional().default(false).describe('다중 선택 허용 여부'),
+            })).min(1).max(3).describe('사용자에게 물어볼 질문 목록 (최대 3개)'),
+          }),
         }),
-      }),
 
-      generateToc: tool({
-        description: '🚨 문서의 뼈대와 본문 템플릿을 생성할 때 호출. 각 항목의 templateHtml은 반드시 실제 내용으로 가득 채워져야 합니다.',
-        inputSchema: z.object({
-          title: z.string().describe('문서의 제목'),
-          documentType: z.string().describe('문서 종류 (예: 전략 기획서, 투자 제안서)'),
-          items: z.array(z.object({
-            id: z.string(),
-            level: z.number(),
-            text: z.string().describe('섹션 제목'),
-            templateHtml: z.string().describe(`🚨[필수] 이 섹션에 들어갈 실제 본문 내용(HTML). 
-              단순 텍스트가 아닌 표(table), 리스트(ul/li), 강조 박스(div) 등을 활용하여 전문가 수준의 컨텐츠를 직접 작성하세요. 플레이스홀더는 절대 금지입니다.`),
-          })),
-          recommendations: z.array(z.object({ id: z.string(), text: z.string() })),
+        updateEditor: tool({
+          description: `🚨 문서의 일반 텍스트(단락) 수정 요청 시 반드시 호출.
+      (주의: 표 수정 시에는 절대 사용 금지)`,
+          inputSchema: z.object({
+            modifiedHtml: z.string().describe('적용할 최종 HTML'),
+            targetText: z.string().optional().describe('수정할 원본 텍스트'),
+            targetKeyword: z.string().optional().describe('핵심 단어 1~2개'),
+            textBefore: z.string().optional().describe('앞 문장'),
+            textAfter: z.string().optional().describe('뒤 문장'),
+          }),
         }),
-      }),
 
-      // 🚨 변경점: targetType('table')을 스키마에서 완전히 제거!
-      updateEditor: tool({
-        description: `🚨 문서의 일반 텍스트(단락) 수정 요청 시 반드시 호출.
-    (주의: 표 수정 시에는 절대 사용 금지)
-    
-    [위치 지정 가이드 - 반드시 준수]
-    - targetText: 수정할 원본 문장을 정확히 복사. 
-      줄바꿈 포함 가능하나 최대 2문장 이내로 제한.
-      문서에 실제로 존재하는 텍스트만 입력할 것.
-    - targetKeyword: targetText에서 가장 고유한 핵심 단어 1~2개.
-      (예: targetText가 "1분기 매출 현황 분석"이면 
-       targetKeyword는 "매출 현황" 또는 "1분기 분석")
-    - textBefore: 수정 위치 바로 앞 문장 (1문장, 20자 내외)
-    - textAfter: 수정 위치 바로 뒤 문장 (1문장, 20자 내외)`,
-        inputSchema: z.object({
-          modifiedHtml: z.string().describe('적용할 최종 HTML'),
-          targetText: z.string().optional().describe(
-            '수정할 원본 텍스트 (문서에 실제 존재하는 텍스트, 최대 2문장)'
-          ),
-          targetKeyword: z.string().optional().describe(
-            'targetText 안의 가장 고유한 핵심 단어 1~2개. 검색에 우선 사용됨.'
-          ),
-          textBefore: z.string().optional().describe(
-            '수정할 부분 바로 앞 문장 (20자 내외)'
-          ),
-          textAfter: z.string().optional().describe(
-            '수정할 부분 바로 뒤 문장 (20자 내외)'
-          ),
+        updateTable: tool({
+          description: '🚨 표(Table)의 데이터를 재작성할 때 반드시 호출.',
+          inputSchema: z.object({
+            targetKeyword: z.string().describe('표 내부의 고유 단어'),
+            tableData: z.array(z.array(z.string())).describe('표에 들어갈 새로운 데이터'),
+          }),
         }),
-      }),
+      },
+      // @ts-expect-error maxSteps is supported in newer ai sdk
+      maxSteps: 3,
+      maxRetries: 0,
+    })
 
-      // ✨ 표 전용 도구
-      updateTable: tool({
-        description: '🚨 표(Table)의 데이터를 재작성할 때 반드시 호출. 표의 서식을 유지하기 위해 HTML이 아닌 2차원 배열 데이터를 반환합니다.',
-        inputSchema: z.object({
-          targetKeyword: z.string().describe('에디터에서 표를 찾기 위한 표 내부의 고유 단어'),
-          tableData: z.array(z.array(z.string())).describe('표에 들어갈 새로운 데이터 (예: [["항목", "비용"], ["개발비", "100만"]])'),
-        }),
-      }),
-    },
-    // AI가 클라이언트의 도구 결과를 받고 스스로 다음 단계를 이어가도록 설정 (v5.0 권장)
-    // @ts-expect-error maxSteps is supported in newer ai sdk
-    maxSteps: 3,
-  })
-
-  return result.toUIMessageStreamResponse({
-    onError: (error) => {
-      console.error('Stream error:', error)
-      return '죄송합니다. 처리 중 오류가 발생했습니다. 다시 시도해주세요.'
-    },
-  })
+    return createUIMessageStreamResponse({
+      stream: result.toUIMessageStream(),
+    })
+  } catch (error) {
+    console.error('Chat API Error:', error);
+    return new Response(JSON.stringify({ error: 'Internal Server Error' }), { status: 500 });
+  }
 }
